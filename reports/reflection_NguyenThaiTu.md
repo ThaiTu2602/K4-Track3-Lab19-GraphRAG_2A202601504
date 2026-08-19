@@ -1,0 +1,68 @@
+# Suy Ngẫm & Kế Hoạch Đồ Án — Lab 19: GraphRAG vs Flat RAG
+
+**Học viên:** Nguyễn Thái Tú
+**MSSV:** 2A202601504
+**Khóa học:** AICB-K34 · Track 3: GraphRAG
+**Ngày thực hiện:** 2026-08-19
+
+---
+
+## 1. Mapping Bài giảng vào Code
+
+| Khái niệm trong bài giảng | Module tương ứng | Hàm / Khối code cụ thể | Quan sát thực tế & Đánh giá |
+|---|---|---|---|
+| **Conservative Coreference** | Module 1 | `resolve_coref_batch()`, `run_coref()` | Chạy 80 batch (5 chunk/batch) trên 400 chunk: 202 chunk bị thay đổi văn bản, 77 chunk có `unresolved_mentions` (model từ chối suy diễn khi mơ hồ — đúng thiết kế), 0 batch lỗi. Phát hiện 1 ca lỗi thật (xem `technical_defense.md` Q1): model đôi lúc *diễn giải lại* câu thay vì chỉ thay thế đại từ, vi phạm nguyên tắc "preserve structure". |
+| **Schema & Allowlist Guard** | Module 2 | `ALLOWED_NODE_TYPES`, `ALLOWED_RELATIONS` trong `extract_batch()`/`run_extraction()` | Guard lọc cứng ngay sau khi nhận JSON từ LLM (`if st not in ALLOWED_NODE_TYPES: continue`), đảm bảo không có node/relation ngoài schema lọt vào Neo4j dù model có "sáng tạo" thêm loại quan hệ khác. *(Số liệu triple thực tế: TODO — điền sau khi chạy xong `2.1`.)* |
+| **Bulk Cypher Ingestion** | Module 2 | `bulk_insert_nodes()`, `bulk_insert_edges()` | Dùng `UNWIND $rows AS row` theo batch 1000, không insert từng dòng. Mỗi edge bắt buộc `source_chunk_id`, `published_date`, `evidence`, `confidence` — kiểm tra bằng `graph_checks()` (assert `invalid_provenance_edges == 0`). *(TODO — điền số nodes/edges thật sau `2.3`/`2.4`.)* |
+| **Entity Resolution & Union-Find** | Module 3 | `build_resolution_map()`, class `UF` | Kiến trúc 2 tầng: FAISS ANN (`threshold=0.85`, hạ từ 0.90 mặc định để mở rộng recall candidate) → Lexical Guard (`SequenceMatcher.ratio() >= 0.72` sau khi `strip_suffix` bỏ Inc/Corp/Ltd) → Union-Find gán canonical entity. *(TODO — điền `entity_resolution_audit_df` sau `2.2`.)* |
+| **Super-node Degree Cap** | Module 4 | `retrieve_graph_context()`, hằng số `SUPER_NODE_DEGREE=100`, `SUPER_NODE_EDGE_CAP=50`, `GLOBAL_EDGE_CAP=250`, `MAX_GRAPH_CONTEXT_CHARS=14000` | 3 tầng chặn bùng nổ context: cap theo node, cap toàn cục, cap ký tự. *(TODO — điền top-3 super-node thật sau `5.1`.)* |
+| **LLM-as-a-Judge Evaluation** | Module 5 | `judge_answer()`, `run_evaluation()` | Chấm 3 tiêu chí (comprehensiveness, faithfulness, multi_hop_reasoning) thang 1-5 kèm rationale, dùng golden dataset thật 25 câu (3 nhóm: factoid/multi-hop/cross-doc) lấy từ repo gốc giảng viên, neo vào 5000 dòng đầu dataset để đảm bảo evidence không bị mất khi sample. *(TODO — điền bảng benchmark sau `4.4`.)* |
+
+---
+
+## 2. Quá trình Debugging & Bài học
+
+### Lỗi kỹ thuật phức tạp nhất
+
+Không phải một lỗi đơn lẻ mà là **một chuỗi 5 lỗi dây chuyền** khi chuyển từ "code khung chạy được trên giấy" sang "chạy thật trên Google Colab":
+
+1. **Xung đột dependency nhiều lớp:** `%pip install` không ghim version kéo về `transformers` bản mới nhất, có code eager-import `torch._dynamo`/`deepgemm` (tính năng FP8 cho GPU Blackwell) không tương thích với `torch` cài sẵn trên Colab → `AttributeError: module 'torch' has no attribute '_utils'`. Ghim version cứng (`transformers==4.44.2`, `sentence-transformers==3.0.1`...) sửa được lỗi này nhưng lộ ra lỗi tiếp theo.
+2. **Package "ma" không xóa được:** `peft` (đóng gói sẵn trong base image Colab, không qua pip cài thông thường) khiến `pip uninstall peft` không dọn sạch — `is_peft_available()` bên trong `transformers` vẫn trả `True` dù `peft` đã "gỡ", dẫn tới `ModuleNotFoundError`/`ImportError` liên tục dù đã uninstall đúng cách. Phải `rm -rf` thẳng thư mục site-packages còn sót mới dứt điểm.
+3. **Nhầm cấu hình Neo4j Aura:** Instance Aura bản Free mới sinh `username`/`database` trùng Instance ID (`268ac4fb`) thay vì mặc định `neo4j` như tài liệu cũ mô tả — `AuthError` dù password đúng 100%, vì sai `NEO4J_USER`/`NEO4J_DATABASE`.
+4. **Dataset thực tế khác giả định code khung:** `HackerNoon/tech-company-news-data-dump` không có cột `text`/`content`/`article` như `pick_col()` kỳ vọng — chỉ có `description` (~200 ký tự, tóm tắt ngắn, không phải toàn văn bài báo).
+5. **Model bị Groq ngừng hỗ trợ, lỗi bị "ngụy trang":** `GROQ_MODEL=llama-3.3-70b-versatile` đã bị gỡ khỏi danh mục Groq → mọi request lỗi `404 model_not_found`. Cơ chế retry+backoff sẵn có (6 lần, tối đa 60s/lần) khiến hiện tượng bề ngoài giống hệt "bị rate-limit" (mỗi batch mất ~100 giây) chứ không crash rõ ràng — tăng `sleep` giữa các batch hoàn toàn không có tác dụng (đã thử), vì nguyên nhân không phải do gọi dồn dập.
+
+### Cách xử lý thành công
+
+- Cô lập từng biến số bằng cell chẩn đoán tối giản thay vì đoán mò: gọi `groq_chat(..., max_retries=1)` để lỗi thật lộ ra ngay lập tức thay vì bị chôn trong 6 lần retry.
+- Với lỗi model, gọi trực tiếp `groq_client.models.list()` để lấy danh sách model **thật đang khả dụng** thay vì tra cứu tài liệu (dễ lỗi thời) — chọn `openai/gpt-oss-120b` (model chính) và `qwen/qwen3.6-27b` (Judge, khác họ model để giảm thiên vị tự chấm).
+- Với dataset, kiểm tra `raw_df.columns.tolist()` thực tế thay vì tin vào code khung, rồi mở rộng danh sách cột `pick_col()` chấp nhận.
+- Dùng `git fetch upstream` để so sánh với repo gốc của giảng viên, phát hiện repo gốc đã bổ sung bộ golden dataset thật (25 câu, neo vào 5000 dòng đầu) — thay đổi cả chiến lược sampling (bỏ random-sample, lấy đúng 5000 dòng đầu, ưu tiên 28 dòng evidence vào ngân sách trích xuất) để đảm bảo đồ thị tri thức thực sự trả lời được golden questions.
+
+### Bài học rút ra
+
+1. **Không tin tưởng mù quáng vào ví dụ/mặc định trong tài liệu** — dịch vụ managed (Neo4j Aura) thay đổi hành vi mặc định theo thời gian mà tài liệu hướng dẫn không cập nhật kịp.
+2. **Cơ chế retry/backoff có thể che giấu lỗi thật** thành hiện tượng "chạy chậm" — luôn cần một đường thoát chẩn đoán nhanh (`max_retries=1`, in lỗi gốc) khi tốc độ bất thường, thay vì tăng tham số chờ đợi mù quáng.
+3. **Không ghim version = rủi ro cực cao** trên môi trường đã có sẵn nhiều package (Colab) — một `%pip install` không ghim có thể kéo theo cả chuỗi xung đột không liên quan trực tiếp đến thư viện mình cần.
+4. **Luôn xác minh schema dữ liệu thật** trước khi tin vào giả định trong code khung — `raw_df.columns.tolist()` mất 5 giây, tránh được lỗi ở bước xa hơn.
+
+---
+
+## 3. Kế hoạch Áp dụng vào Đồ án Thực tế (Action Plan)
+
+> **TODO:** Phần này cần thông tin về đồ án thực tế của tôi để hoàn thiện. Sẽ điền:
+> - Tên đồ án / bài toán thực tế đang làm
+> - Đánh giá: bài toán có thực sự cần GraphRAG, hay Flat RAG / Hybrid RAG là đủ — dựa trên đặc thù dữ liệu (có quan hệ nhiều bước giữa các thực thể không, hay chỉ cần tra cứu đơn lẻ)
+> - Cấu trúc Node/Relation dự kiến nếu áp dụng GraphRAG
+> - Chiến lược xử lý Entity Resolution & Super-node cho bài toán cụ thể (kế thừa kinh nghiệm threshold 2 tầng ANN+Lexical Guard đã kiểm chứng trong lab này)
+
+---
+
+## 🎯 TỰ ĐÁNH GIÁ
+
+| Tiêu chí | Điểm tự chấm (1–5) | Ghi chú |
+|---|---|---|
+| Mức độ hiểu bài giảng GraphRAG | | *(điền sau khi hoàn thành toàn bộ pipeline)* |
+| Khả năng kiểm soát AI Coding Agent | | |
+| Chất lượng đồ thị tri thức xây dựng | | |
+| Khả năng phân tích và debug hệ thống | 5 | Đã xử lý thành công chuỗi 5 lỗi dây chuyền độc lập (dependency, package ma, auth, schema dataset, model deprecated) bằng phương pháp cô lập biến số và chẩn đoán trực tiếp thay vì đoán mò. |
