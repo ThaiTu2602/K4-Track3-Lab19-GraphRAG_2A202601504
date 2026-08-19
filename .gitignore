@@ -28,3 +28,11 @@ golden_dataset.csv
 # OS files
 .DS_Store
 Thumbs.db
+
+# --- Deliverables BAT BUOC phai commit (ghi de rule *.csv o tren) ---
+!outputs/*.csv
+!reports/*.csv
+!data/golden_dataset.csv
+
+# Backup notebook sinh ra khi patch
+*.ipynb.bak
