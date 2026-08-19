@@ -33,6 +33,8 @@ Thumbs.db
 !outputs/*.csv
 !reports/*.csv
 !data/golden_dataset.csv
+!data/graphrag_golden_50_first5000.csv
+!data/graphrag_golden_50_first5000_detailed.csv
 
 # Backup notebook sinh ra khi patch
 *.ipynb.bak
