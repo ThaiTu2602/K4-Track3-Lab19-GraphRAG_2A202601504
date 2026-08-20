@@ -1,0 +1,5 @@
+type,left,right,similarity,decision
+Company,Reliance Industries Ltd,Reliance Industries,0.9447486400604248,MERGE_VECTOR
+Company,Activision Blizzard,Activision Blizzard Inc.,0.918491542339325,MERGE_VECTOR
+Company,Airbnb,Airbnb Inc.,0.8746915459632874,MERGE_VECTOR
+Technology,Chandrayaan-I,Chandrayaan-III,0.8583507537841797,MERGE_VECTOR
