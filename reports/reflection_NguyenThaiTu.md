@@ -50,11 +50,24 @@ Không phải một lỗi đơn lẻ mà là **một chuỗi 5 lỗi dây chuy�
 
 ## 3. Kế hoạch Áp dụng vào Đồ án Thực tế (Action Plan)
 
-> **TODO:** Phần này cần thông tin về đồ án thực tế của tôi để hoàn thiện. Sẽ điền:
-> - Tên đồ án / bài toán thực tế đang làm
-> - Đánh giá: bài toán có thực sự cần GraphRAG, hay Flat RAG / Hybrid RAG là đủ — dựa trên đặc thù dữ liệu (có quan hệ nhiều bước giữa các thực thể không, hay chỉ cần tra cứu đơn lẻ)
-> - Cấu trúc Node/Relation dự kiến nếu áp dụng GraphRAG
-> - Chiến lược xử lý Entity Resolution & Super-node cho bài toán cụ thể (kế thừa kinh nghiệm threshold 2 tầng ANN+Lexical Guard đã kiểm chứng trong lab này)
+**Tên đồ án:** AI Agent quản lý kênh cộng đồng đa nền tảng — bot cho Telegram và Discord, admin quản lý luật/quy định qua giao diện web (có thể thêm luật thủ công hoặc upload nguyên file luật của kênh), agent tự động phát hiện và xử lý vi phạm (spam, ngôn từ thô tục, ...).
+
+**Đánh giá: có cần GraphRAG hay Flat/Hybrid RAG là đủ?**
+
+Đồ án này thực chất có **2 bài toán con với đặc thù dữ liệu khác hẳn nhau**, nên câu trả lời đúng là **Hybrid**, không phải chọn một trong hai:
+
+1. **"Tin nhắn này vi phạm luật nào?"** — bài toán tra cứu đơn lẻ (single-hop): so khớp nội dung tin nhắn với đoạn luật liên quan trong file luật của kênh. Luật là văn bản tự chứa (mỗi điều khoản độc lập, không cần nối nhiều điều luật lại mới hiểu), nên **Flat RAG (vector search trên các đoạn luật đã chunk + embed) là đủ** — dùng GraphRAG ở đây là over-engineering, giống cách extract triple từ tin tức HackerNoon vốn không cần thiết cho những đoạn text tự chứa.
+2. **"Người dùng này đã vi phạm bao nhiêu lần, có nên leo thang hình phạt (warn → mute → ban) không, và tài khoản Telegram/Discord này có phải cùng một người từng bị cảnh cáo ở kênh khác không?"** — đây là bài toán **đa bước (multi-hop) thật sự**: cần nối User → các ViolationEvent → Rule bị vi phạm → Punishment đã nhận, và trong nhiều trường hợp còn phải nối qua nhiều nền tảng (Telegram user ↔ Discord user cùng 1 người). Đây chính xác là dạng quan hệ nhiều bước giữa nhiều thực thể mà GraphRAG được thiết kế cho, **không thể trả lời chỉ bằng vector similarity của riêng tin nhắn hiện tại**.
+
+**Cấu trúc Node & Relation dự kiến (cho phần 2 — lịch sử vi phạm/leo thang hình phạt):**
+- Nodes: `User` (id nền tảng, tên hiển thị), `Channel`/`Server` (Telegram/Discord), `Rule` (điều khoản, mức độ nghiêm trọng), `ViolationEvent` (thời điểm, nội dung, loại vi phạm), `Punishment` (loại: warn/mute/kick/ban, thời điểm, thời hạn)
+- Relations: `(User)-[:POSTED]->(ViolationEvent)`, `(ViolationEvent)-[:VIOLATES]->(Rule)`, `(ViolationEvent)-[:OCCURRED_IN]->(Channel)`, `(Punishment)-[:RESULTED_FROM]->(ViolationEvent)`, `(User)-[:RECEIVED]->(Punishment)`, `(User)-[:MEMBER_OF]->(Channel)`
+
+Khác với lab này (nodes/edges được LLM *trích xuất* từ văn bản tự do), ở đồ án thực tế phần lớn nodes/edges này **được hệ thống ghi trực tiếp** từ sự kiện thật (mỗi lần bot xử lý 1 tin nhắn vi phạm), không cần bước NER/RE extraction — nên rủi ro "hallucination lúc extract" trong lab này (ví dụ ca G5000-26) sẽ ít xảy ra hơn ở nhánh này.
+
+**Chiến lược Entity Resolution & Super-node kế thừa từ lab:**
+- **Entity Resolution** cho `User` giữa 2 nền tảng (Telegram ↔ Discord) là bài toán rủi ro cao hơn hẳn so với gộp tên công ty trong lab: **false merge ở đây đồng nghĩa với ban nhầm người vô tội** (bị gán lịch sử vi phạm của người khác), còn false split thì cho phép người vi phạm lách luật bằng tài khoản khác. Vì vậy — khác với lab (tự động `MERGE_VECTOR` khi similarity > 0.85) — ở đồ án thực tế, việc liên kết danh tính xuyên nền tảng **không nên tự động hoá bằng similarity** (username giống nhau không đáng tin), mà cần bằng chứng mạnh hơn (admin xác nhận thủ công, hoặc user tự liên kết tài khoản qua OTP) — bài học rút ra trực tiếp từ ca `Chandrayaan-I` vs `Chandrayaan-III` trong lab: similarity cao không đồng nghĩa là cùng một thực thể.
+- **Super-node cap** áp dụng cho `User` là moderator lâu năm hoặc `Rule` phổ biến (VD: "cấm spam") — có hàng nghìn `ViolationEvent` liên kết tới. Khi agent cần tóm tắt lịch sử vi phạm của 1 user để quyết định hình phạt, phải cap số lượng event đưa vào context (ví dụ 20 event gần nhất) giống `SUPER_NODE_EDGE_CAP` trong lab, tránh tràn context — nhưng khác với tin tức (ưu tiên mới nhất là hợp lý), ở đây cần cân nhắc thêm: vi phạm nghiêm trọng (spam/toxic nặng) dù cũ vẫn nên được giữ lại trong context thay vì bị cắt chỉ vì không phải gần nhất, vì mức độ nghiêm trọng nên ảnh hưởng tới ranking, không chỉ published_date.
 
 ---
 

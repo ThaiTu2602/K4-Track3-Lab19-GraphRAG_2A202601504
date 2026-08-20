@@ -170,14 +170,20 @@ Bottleneck đầu tiên **không phải Neo4j** mà là **thông lượng LLM ex
 
 ### 3. Kế hoạch Áp dụng vào Đồ án Thực tế (Action Plan)
 
-> **TODO:** Phần này cần thông tin về đồ án thực tế của học viên để hoàn thiện — tên đồ án, đặc thù dữ liệu (có quan hệ nhiều bước giữa các thực thể hay chỉ cần tra cứu đơn lẻ), cấu trúc Node/Relation dự kiến, và chiến lược Entity Resolution/Super-node kế thừa từ lab này.
+- **Tên đồ án:** AI Agent quản lý kênh cộng đồng đa nền tảng — bot cho Telegram và Discord, admin quản lý luật/quy định qua giao diện web (thêm luật thủ công hoặc upload nguyên file luật của kênh), agent tự động phát hiện và xử lý vi phạm (spam, ngôn từ thô tục, ...).
 
-- **Tên đồ án / Dự án:** *(chờ điền)*
-- **Đặc thù bài toán & Lý do chọn giải pháp:** *(chờ điền)*
-- **Cấu trúc Node & Relation dự kiến:**
-  - Nodes: *(chờ điền)*
-  - Relations: *(chờ điền)*
-- **Chiến lược xử lý Super-node & Entity Resolution:** *(chờ điền — kế thừa kiến trúc 2 tầng ANN (threshold=0.85) + Lexical Guard đã kiểm chứng trong lab này, có bổ sung rule chặn false-merge kiểu "số thứ tự/phiên bản" phát hiện được ở mục 2 Phần 1.)*
+- **Đặc thù bài toán & Lý do chọn giải pháp:** Đồ án có 2 bài toán con đặc thù dữ liệu khác nhau → **Hybrid**, không chọn thuần một trong hai.
+  1. *"Tin nhắn này vi phạm luật nào?"* — tra cứu đơn lẻ, luật là văn bản tự chứa → **Flat RAG** (vector search trên đoạn luật đã chunk) là đủ, dùng GraphRAG ở đây là over-engineering.
+  2. *"User này vi phạm bao nhiêu lần, có nên leo thang hình phạt không, tài khoản Telegram/Discord này có phải cùng 1 người từng bị cảnh cáo ở kênh khác?"* — quan hệ đa bước thật sự giữa User → ViolationEvent → Rule → Punishment, có thể xuyên nhiều nền tảng → cần **GraphRAG**.
+
+- **Cấu trúc Node & Relation dự kiến (nhánh lịch sử vi phạm):**
+  - Nodes: `User`, `Channel`/`Server` (Telegram/Discord), `Rule`, `ViolationEvent`, `Punishment`
+  - Relations: `(User)-[:POSTED]->(ViolationEvent)`, `(ViolationEvent)-[:VIOLATES]->(Rule)`, `(ViolationEvent)-[:OCCURRED_IN]->(Channel)`, `(Punishment)-[:RESULTED_FROM]->(ViolationEvent)`, `(User)-[:RECEIVED]->(Punishment)`, `(User)-[:MEMBER_OF]->(Channel)`
+  - Khác với lab (nodes/edges do LLM extract từ văn bản tự do), ở đây phần lớn được hệ thống **ghi trực tiếp** từ sự kiện thật, giảm rủi ro hallucination lúc extraction so với ca `G5000-26` trong lab.
+
+- **Chiến lược xử lý Super-node & Entity Resolution:**
+  - *Entity Resolution* cho `User` giữa Telegram ↔ Discord rủi ro cao hơn lab: false merge = ban nhầm người vô tội (gán nhầm lịch sử vi phạm), false split = người vi phạm lách luật bằng tài khoản khác. Vì vậy **không tự động hoá bằng similarity** như lab (`MERGE_VECTOR` khi >0.85) — cần bằng chứng mạnh hơn (admin xác nhận thủ công hoặc OTP liên kết tài khoản). Bài học trực tiếp từ ca `Chandrayaan-I` vs `-III`: similarity cao không đồng nghĩa cùng thực thể.
+  - *Super-node cap* áp dụng cho moderator lâu năm hoặc `Rule` phổ biến (VD "cấm spam") có hàng nghìn `ViolationEvent`. Khi tóm tắt lịch sử để quyết định hình phạt, cần cap số event đưa vào context (giống `SUPER_NODE_EDGE_CAP`) — nhưng khác tin tức, ranking không nên chỉ dựa `published_date`: vi phạm nghiêm trọng dù cũ vẫn cần giữ lại trong context.
 
 ---
 
