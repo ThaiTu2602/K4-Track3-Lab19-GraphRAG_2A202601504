@@ -55,15 +55,17 @@ Trên tổng 400 chunk gửi trích xuất: **202 chunk bị thay đổi**, **77
 
 ## 3. Đồ thị & Super-node Mitigation
 
-**Bằng chứng từ benchmark thực tế:** cột `graph_supernode_events` trong `graphrag_eval_results.csv` bằng **0 trên toàn bộ 25/25 câu hỏi** — nghĩa là ở quy mô lab này (400 chunk trích xuất → 121 triple), **không entity nào chạm ngưỡng `SUPER_NODE_DEGREE=100`**, cơ chế cắt tỉa chưa từng phải kích hoạt. Khớp với dự đoán trong `plan.md`: với chỉ ~121 triple, bậc kết nối cao nhất còn thấp hơn nhiều so với ngưỡng 100.
+**Bằng chứng từ benchmark thực tế:** cột `graph_supernode_events` trong `graphrag_eval_results.csv` bằng **0 trên toàn bộ 25/25 câu hỏi** — nghĩa là ở quy mô lab này (`graph_checks()`: **197 nodes, 119 edges, 0 invalid_provenance_edges**), **không entity nào chạm ngưỡng `SUPER_NODE_DEGREE=100`**, cơ chế cắt tỉa chưa từng phải kích hoạt. Khớp với dự đoán trong `plan.md`: với chỉ 119 edge, bậc kết nối cao nhất còn thấp hơn nhiều so với ngưỡng 100. (Lưu ý: bước extraction sinh ra 121 triple thô, nhưng sau khi bulk-insert/entity resolution còn 119 edge duy nhất trong Neo4j — chênh lệch nhỏ do trùng lặp cạnh giữa các entity đã được resolve về cùng canonical node, ví dụ "Reliance Industries" gộp từ 2 cách viết.)
 
-> **TODO nhỏ còn thiếu:** số liệu top-3 degree thật (`top_degree_df` cell `2.4` / `test_supernode_policy()` cell `5.1`) — gửi output cell chẩn đoán đã đưa trước đó để điền nốt bảng dưới.
+**Top 3 Super-nodes thật** (`top_degree_df`, cell `2.4`):
 
 | Hạng | Tên thực thể | Loại | Degree |
 |---|---|---|---|
-| 1 | *(chờ dữ liệu)* | | |
-| 2 | | | |
-| 3 | | | |
+| 1 | Reliance Industries | Company | 6 |
+| 2 | Railergy | Company | 5 |
+| 3 (đồng hạng) | Norwegian University of Life Sciences / Activision Blizzard | Company | 4 |
+
+Ngay cả node bậc cao nhất (degree 6) vẫn cách rất xa ngưỡng `SUPER_NODE_DEGREE=100` — xác nhận bằng số liệu thật rằng ở quy mô 400 chunk/119 edge, cơ chế Super-node cap thuần tuý là "phòng ngừa cho tương lai", chưa có dịp chứng minh tác dụng thực tế trong lab này. Đáng chú ý: "Reliance Industries" đứng đầu bảng degree một phần vì đây chính là entity vừa được entity resolution gộp 2 cách viết (`Reliance Industries Ltd` + `Reliance Industries`, xem mục 2) — minh hoạ trực tiếp lý do entity resolution quan trọng: nếu không gộp, 2 node riêng biệt sẽ mỗi node chỉ có degree ~3, làm giảm sai lệch độ trung tâm (centrality) thực sự của entity này trong đồ thị.
 
 **Ưu điểm của việc lấy 50 cạnh mới nhất theo `published_date DESC`:** giới hạn context bounded (tránh nổ token khi 1 entity có hàng trăm cạnh), ưu tiên thông tin cập nhật — hợp với tin tức công nghệ vốn thay đổi nhanh (VD: trạng thái "đang cân nhắc" của AWS với chip AMD có thể đã trở thành quyết định cuối cùng ở bài báo mới hơn).
 

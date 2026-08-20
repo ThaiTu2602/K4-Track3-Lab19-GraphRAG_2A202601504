@@ -57,15 +57,17 @@ Trên tổng 400 chunk gửi trích xuất: **202 chunk bị thay đổi**, **77
 
 ### 3. Đồ thị & Super-node Mitigation
 
-**Bằng chứng thực tế:** cột `graph_supernode_events` trong `graphrag_eval_results.csv` bằng **0 trên toàn bộ 25/25 câu hỏi** — ở quy mô lab (400 chunk → 121 triple), không entity nào chạm ngưỡng `SUPER_NODE_DEGREE=100`, cơ chế cắt tỉa chưa từng phải kích hoạt.
+**Bằng chứng thực tế:** cột `graph_supernode_events` trong `graphrag_eval_results.csv` bằng **0 trên toàn bộ 25/25 câu hỏi** — `graph_checks()` xác nhận đồ thị thật có **197 nodes, 119 edges, 0 invalid_provenance_edges** (từ 121 triple thô sau extraction, giảm nhẹ do entity resolution gộp trùng). Không entity nào chạm ngưỡng `SUPER_NODE_DEGREE=100`, cơ chế cắt tỉa chưa từng phải kích hoạt.
 
-**Top 3 Super-nodes:**
+**Top 3 Super-nodes (thật, từ `top_degree_df`):**
 
 | Hạng | Tên thực thể | Loại thực thể (Type) | Bậc kết nối (Degree) |
 |------|--------------|---------------------|----------------------|
-| 1 | *(đang chờ output `top_degree_df` / `test_supernode_policy()`)* | | |
-| 2 | | | |
-| 3 | | | |
+| 1 | Reliance Industries | Company | 6 |
+| 2 | Railergy | Company | 5 |
+| 3 (đồng hạng) | Norwegian University of Life Sciences / Activision Blizzard | Company | 4 |
+
+Ngay cả node cao nhất (degree 6) vẫn rất xa ngưỡng 100 — Super-node cap ở quy mô lab thuần tuý là phòng ngừa cho tương lai. "Reliance Industries" đứng đầu một phần vì vừa được entity resolution gộp 2 cách viết (xem mục 2) — minh hoạ trực tiếp lý do entity resolution ảnh hưởng tới độ chính xác của degree/centrality.
 
 **Ưu điểm & Rủi ro của Temporal Mitigation (lấy 50 cạnh mới nhất theo `published_date DESC`):**
 - *Ưu điểm:* giới hạn context bounded, tránh nổ token khi 1 entity có hàng trăm cạnh; ưu tiên thông tin cập nhật — hợp với tin tức công nghệ thay đổi nhanh.
