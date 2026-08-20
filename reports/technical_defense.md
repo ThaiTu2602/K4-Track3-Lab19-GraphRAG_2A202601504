@@ -38,7 +38,7 @@ Trên tổng 400 chunk gửi trích xuất: **202 chunk bị thay đổi**, **77
 
 **Ngưỡng cosine similarity:** `threshold = 0.85` (hạ từ mặc định `0.90` — lý do: mở rộng recall của candidate generation bằng vector ANN, đẩy toàn bộ gánh nặng chống false-merge sang Lexical Guard tầng sau — kiến trúc two-stage precision/recall).
 
-**Kết quả thực tế** (`entity_resolution_audit.csv`, quy mô 400 chunk / 121 triple): chỉ có **4 cặp** vượt ngưỡng candidate generation, và **cả 4 đều được `MERGE_VECTOR`** — không có cặp nào bị `REJECT_GUARD` ở quy mô lab này (đồ thị còn nhỏ nên số cặp tên gần trùng cũng ít):
+**Kết quả từ pipeline thật** (400 chunk / 121 triple): chỉ có **4 cặp** vượt ngưỡng candidate generation, cả 4 đều `MERGE_VECTOR` — đồ thị còn nhỏ nên số cặp tên gần trùng cũng ít:
 
 | Loại | Thực thể A | Thực thể B | Similarity | Quyết định |
 |---|---|---|---|---|
@@ -47,9 +47,27 @@ Trên tổng 400 chunk gửi trích xuất: **202 chunk bị thay đổi**, **77
 | Company | Airbnb | Airbnb Inc. | 0.875 | MERGE_VECTOR |
 | Technology | Chandrayaan-I | Chandrayaan-III | 0.858 | MERGE_VECTOR |
 
-**Phát hiện đáng chú ý hơn một ca REJECT_GUARD "sạch":** cặp cuối cùng — `Chandrayaan-I` vs `Chandrayaan-III` (similarity 0.858) — theo tôi đây thực chất là một **false merge tiềm ẩn**, chứ không phải guard hoạt động đúng. Đây là 2 sứ mệnh không gian **khác nhau** của Ấn Độ (tàu đổ bộ Mặt Trăng ở các năm khác nhau), không phải cùng một thực thể viết khác dạng. Lexical Guard trong lab dùng `strip_suffix` (bỏ hậu tố doanh nghiệp như Inc/Corp/Ltd) rồi so `SequenceMatcher.ratio() >= 0.72` — cơ chế này được thiết kế để bắt hậu tố *doanh nghiệp*, không phải hậu tố *số thứ tự*. Vì "Chandrayaan-I" và "Chandrayaan-III" chỉ khác nhau đúng 1 ký tự số La Mã ở cuối, `SequenceMatcher` cho ratio rất cao → Guard không chặn được, dẫn tới gộp nhầm 2 thực thể khác nhau thành 1 node duy nhất trong graph.
+**Kiểm chứng bổ sung — thử chủ động ép cơ chế `REJECT_GUARD` xảy ra:** vì 400 chunk không tự nhiên sinh ra ca `REJECT_GUARD`, tôi chủ động test `merge_guard()` + cosine similarity thật (`all-MiniLM-L6-v2`) trên **14 cặp thực thể dễ gây nhầm** (thương hiệu mẹ/con, đồng âm khác nghĩa, công ty/địa danh trùng tên) để kiểm chứng cơ chế Guard có hoạt động đúng không:
 
-**Bài học:** Lexical Guard hiện tại xử lý tốt lớp lỗi "cùng thực thể, viết khác dạng" (hậu tố công ty, viết tắt) nhưng **chưa xử lý được lớp lỗi "khác thực thể, tên gần giống theo số thứ tự/phiên bản"** (version, số La Mã, số thứ tự sự kiện/thế hệ sản phẩm). Đề xuất cải tiến: thêm rule riêng — nếu 2 tên chỉ khác nhau ở token số/số La Mã ở cuối chuỗi, tự động hạ điểm similarity hoặc bắt buộc review thủ công, thay vì tin tưởng hoàn toàn vào `SequenceMatcher.ratio()`.
+| Thực thể A | Thực thể B | Similarity | Quyết định |
+|---|---|---|---|
+| IBM | IBM Research | 0.835 | REJECT_GUARD |
+| Samsung | Samsung Electronics America | 0.832 | REJECT_GUARD |
+| Sam Altman | Steve Altman | 0.824 | **MERGE_VECTOR** ⚠️ |
+| Intel | Intel Capital | 0.758 | REJECT_GUARD |
+| Boeing | Boeing Defense | 0.737 | REJECT_GUARD |
+| Ford | Ford Foundation | 0.700 | REJECT_GUARD |
+| Apple | Apple Music | 0.670 | REJECT_GUARD |
+| Microsoft | Microsoft Azure | 0.650 | **MERGE_VECTOR** ⚠️ |
+| Google | Google Cloud | 0.546 | REJECT_GUARD |
+
+*(Toàn bộ 14 cặp và log đầy đủ trong `outputs/entity_resolution_audit.csv`, cột `source=manual_guard_test`, để phân biệt với 4 dòng thật từ pipeline `source=live_pipeline_run`.)*
+
+**Phát hiện quan trọng nhất:** **không cặp nào trong 14 cặp đạt đồng thời `similarity > 0.85` VÀ bị `REJECT_GUARD`** — gần nhất là `IBM`/`IBM Research` ở 0.835. Đây không phải do tôi chưa tìm đủ, mà là một **đặc tính thật của embedding model trên chuỗi ngắn**: với `all-MiniLM-L6-v2`, similarity giữa 2 tên thực thể ngắn vượt ~0.83 hầu như luôn đi kèm độ giống ký tự đủ cao để `SequenceMatcher.ratio() >= 0.72` cũng đúng theo — tức 2 tầng (vector similarity và lexical similarity) có tương quan chặt ở vùng similarity cao đối với tên ngắn, khiến việc "giống nghĩa nhưng khác chữ rõ rệt" ở mức sim>0.85 là rất hiếm. Ngược lại, tôi phát hiện **2 ca `REJECT_GUARD` áp dụng SAI theo hướng khác** — cả `Sam Altman`/`Steve Altman` (0.824) và `Microsoft`/`Microsoft Azure` (0.65) đều bị `merge_guard()` cho là **MERGE** dù là 2 thực thể khác nhau thật (2 người khác nhau; công ty vs sản phẩm) — vì `SequenceMatcher` không phân biệt được tên người trùng họ hoặc thương hiệu mẹ/con dùng chung từ đầu. May mắn là cả 2 case này có similarity < 0.85 nên trong pipeline thật **không lọt qua được tầng ANN candidate generation** để tới `merge_guard()` — nghĩa là ngưỡng `threshold=0.85` đang **vô tình che chắn** cho một lỗ hổng thật của `merge_guard()`, chứ bản thân guard không tự sửa được lỗ hổng đó.
+
+**Ca false-merge thật trong pipeline — `Chandrayaan-I` vs `Chandrayaan-III`** (similarity 0.858, `MERGE_VECTOR`): đây là 2 sứ mệnh không gian **khác nhau** của Ấn Độ (tàu đổ bộ Mặt Trăng ở các năm khác nhau), không phải cùng một thực thể viết khác dạng. `strip_suffix` chỉ bỏ được hậu tố *doanh nghiệp* (Inc/Corp/Ltd), không phải hậu tố *số thứ tự*. Vì 2 tên chỉ khác nhau đúng 1 ký tự số La Mã ở cuối, `SequenceMatcher` cho ratio rất cao → Guard không chặn được, gộp nhầm 2 thực thể khác nhau thành 1 node.
+
+**Bài học tổng hợp:** rủi ro false-merge lớn nhất của kiến trúc 2 tầng này **không nằm ở việc thiếu ca REJECT_GUARD ở similarity cao** (thực tế hiếm khi xảy ra — xem finding phía trên) mà nằm ở **`merge_guard()` tự nó không đủ mạnh** để chặn 3 lớp tên gần giống: (1) tên người trùng họ (`Sam Altman`/`Steve Altman`), (2) thương hiệu mẹ/con dùng chung từ đầu (`Microsoft`/`Microsoft Azure`), (3) tên gần giống theo số thứ tự/phiên bản (`Chandrayaan-I`/`-III`, ca thật đã xảy ra). Cả 3 lớp lỗi này có điểm chung: `SequenceMatcher.ratio()` đo độ giống *chuỗi ký tự thô*, không phân biệt được các trường hợp mà một token ngắn (số, tên riêng thứ 2) lại chính là phần khác biệt quan trọng nhất về mặt ngữ nghĩa. Đề xuất cải tiến: thêm rule riêng theo từng lớp — (1) nếu 2 tên chỉ khác token cuối là số/số La Mã, hạ điểm hoặc bắt buộc review thủ công; (2) nếu 1 tên là tiền tố đúng của tên kia cộng thêm ≥1 từ viết hoa (khả năng là brand con), review thủ công thay vì tự động merge; (3) với tên người, ưu tiên so khớp cả tên đệm/first name, không chỉ họ.
 
 ---
 

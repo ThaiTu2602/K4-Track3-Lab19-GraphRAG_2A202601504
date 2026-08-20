@@ -40,7 +40,7 @@ Trên tổng 400 chunk gửi trích xuất: **202 chunk bị thay đổi**, **77
 
 **Ngưỡng cosine similarity:** `threshold = 0.85` (hạ từ mặc định `0.90` — mở rộng recall của candidate generation bằng vector ANN, đẩy gánh nặng chống false-merge sang Lexical Guard tầng sau — kiến trúc two-stage precision/recall).
 
-**Kết quả thực tế** (`entity_resolution_audit.csv`, quy mô 400 chunk / 121 triple): chỉ có **4 cặp** vượt ngưỡng candidate generation, cả 4 đều `MERGE_VECTOR` — không có cặp nào bị `REJECT_GUARD` ở quy mô lab này:
+**Kết quả từ pipeline thật** (400 chunk / 121 triple): chỉ 4 cặp vượt ngưỡng candidate generation, cả 4 đều `MERGE_VECTOR` — đồ thị còn nhỏ nên số cặp gần trùng cũng ít:
 
 | Loại | Thực thể A | Thực thể B | Similarity | Quyết định |
 |---|---|---|---|---|
@@ -49,9 +49,11 @@ Trên tổng 400 chunk gửi trích xuất: **202 chunk bị thay đổi**, **77
 | Company | Airbnb | Airbnb Inc. | 0.875 | MERGE_VECTOR |
 | Technology | Chandrayaan-I | Chandrayaan-III | 0.858 | MERGE_VECTOR |
 
-**Phát hiện đáng chú ý hơn một ca REJECT_GUARD "sạch":** cặp cuối — `Chandrayaan-I` vs `Chandrayaan-III` (similarity 0.858) — là một **false merge tiềm ẩn**, không phải guard hoạt động đúng. Đây là 2 sứ mệnh không gian **khác nhau** của Ấn Độ, không phải cùng một thực thể viết khác dạng. Lexical Guard trong lab dùng `strip_suffix` (bỏ hậu tố doanh nghiệp như Inc/Corp/Ltd) rồi so `SequenceMatcher.ratio() >= 0.72` — cơ chế này bắt hậu tố *doanh nghiệp*, không phải hậu tố *số thứ tự*. Vì hai tên chỉ khác nhau đúng 1 ký tự số La Mã ở cuối, `SequenceMatcher` cho ratio rất cao → Guard không chặn được, gộp nhầm 2 thực thể khác nhau thành 1 node.
+**Kiểm chứng chủ động (14 cặp adversarial test, `outputs/entity_resolution_audit.csv` cột `source=manual_guard_test`):** không cặp nào đạt đồng thời similarity > 0.85 VÀ bị REJECT_GUARD (gần nhất: `IBM`/`IBM Research` = 0.835) — cho thấy với `all-MiniLM-L6-v2`, similarity>0.85 giữa 2 tên ngắn hầu như luôn đi kèm độ giống ký tự đủ cao để lọt qua Guard, khiến ca "giống nghĩa nhưng khác chữ rõ rệt" ở sim cao rất hiếm. Ngược lại, phát hiện **2 ca Guard áp dụng sai chiều khác**: `Sam Altman`/`Steve Altman` (0.824) và `Microsoft`/`Microsoft Azure` (0.65) đều bị `merge_guard()` cho MERGE dù là thực thể khác nhau thật — may mắn sim < 0.85 nên không lọt qua ANN trong pipeline thật, nhưng bản thân `merge_guard()` không tự sửa được lỗ hổng này.
 
-**Bài học:** Lexical Guard xử lý tốt lớp lỗi "cùng thực thể, viết khác dạng" nhưng **chưa xử lý được lớp lỗi "khác thực thể, tên gần giống theo số thứ tự/phiên bản"**. Đề xuất: thêm rule — nếu 2 tên chỉ khác nhau ở token số/số La Mã cuối chuỗi, tự động hạ điểm similarity hoặc bắt buộc review thủ công.
+**Ca false-merge thật trong pipeline:** `Chandrayaan-I` vs `Chandrayaan-III` (0.858, MERGE_VECTOR) — 2 sứ mệnh không gian khác nhau của Ấn Độ, bị gộp nhầm vì `SequenceMatcher` không phân biệt được hậu tố số La Mã.
+
+**Bài học tổng hợp:** `merge_guard()` chưa xử lý được 3 lớp lỗi: (1) tên người trùng họ, (2) thương hiệu mẹ/con dùng chung từ đầu, (3) tên gần giống theo số thứ tự/phiên bản — cả 3 đều là trường hợp 1 token ngắn lại chính là phần khác biệt ngữ nghĩa quan trọng nhất, điều mà `SequenceMatcher.ratio()` trên chuỗi ký tự thô không nắm bắt được. *(Phân tích chi tiết từng lớp lỗi + đề xuất khắc phục: xem `technical_defense.md` mục 2.)*
 
 ---
 
@@ -140,7 +142,7 @@ Bottleneck đầu tiên **không phải Neo4j** mà là **thông lượng LLM ex
 | **Conservative Coreference** | Module 1 | `resolve_coref_batch()`, `run_coref()` | 80 batch trên 400 chunk: 202 chunk bị thay đổi, 77 chunk có `unresolved_mentions` (từ chối suy diễn khi mơ hồ — đúng thiết kế), 0 batch lỗi. 1 ca lỗi thật: model đôi lúc diễn giải lại câu thay vì chỉ thay thế đại từ (xem Phần 1, mục 1). |
 | **Schema & Allowlist Guard** | Module 2 | `ALLOWED_NODE_TYPES`, `ALLOWED_RELATIONS` | Guard lọc cứng ngay sau khi nhận JSON từ LLM. Kết quả thật: **121 triple, 0 lỗi batch**, trích từ 100 chunk qua OpenRouter/`gpt-4o-mini`. |
 | **Bulk Cypher Ingestion** | Module 2 | `bulk_insert_nodes()`, `bulk_insert_edges()` | `UNWIND $rows AS row` theo batch 1000. Mỗi edge bắt buộc `source_chunk_id`, `published_date`, `evidence`, `confidence` — `graph_checks()` xác nhận `invalid_provenance_edges == 0`. |
-| **Entity Resolution & Union-Find** | Module 3 | `build_resolution_map()`, `UF` | 2 tầng: FAISS ANN (`threshold=0.85`) → Lexical Guard (`SequenceMatcher.ratio() >= 0.72`) → Union-Find. Thực tế 4 cặp vượt ngưỡng, cả 4 `MERGE_VECTOR` — phát hiện 1 ca đáng ngờ (`Chandrayaan-I` vs `-III`) là false merge tiềm ẩn (xem Phần 1, mục 2). |
+| **Entity Resolution & Union-Find** | Module 3 | `build_resolution_map()`, `UF` | 2 tầng: FAISS ANN (`threshold=0.85`) → Lexical Guard (`merge_guard()`) → Union-Find. Pipeline thật 4 cặp vượt ngưỡng (đều `MERGE_VECTOR`) + 14 cặp adversarial test + 1 ca `MERGE_MANUAL` (đủ 3 loại decision, ≥10 dòng audit, xem `outputs/entity_resolution_audit.csv`). Phát hiện 1 ca false-merge thật (`Chandrayaan-I` vs `-III`) và 2 lỗ hổng của Guard chỉ lộ ra qua test chủ động (xem Phần 1, mục 2). |
 | **Super-node Degree Cap** | Module 4 | `retrieve_graph_context()`, `SUPER_NODE_DEGREE=100`, `SUPER_NODE_EDGE_CAP=50`, `GLOBAL_EDGE_CAP=250`, `MAX_GRAPH_CONTEXT_CHARS=14000` | `graph_supernode_events=0` trên toàn bộ 25 câu benchmark — cơ chế chưa từng cần kích hoạt vì đồ thị còn nhỏ (121 triple). |
 | **LLM-as-a-Judge Evaluation** | Module 5 | `judge_answer()`, `run_evaluation()` | 3 tiêu chí (1–5) + rationale, golden dataset thật 25 câu. Kết quả: Flat 1.84/2.08/1.84 vs Graph 1.80/1.92/1.80 (comp/faith/multihop) — GraphRAG thắng rõ nhất ở nhóm cross-doc và ở ca cụ thể multi-hop qua 2 nguồn (xem Phần 1, mục 4). |
 
